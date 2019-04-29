@@ -1,0 +1,6 @@
+# Hyperparams for CNN
+cnn_layers:
+ - 120
+ - 300
+cnn_kernel_size: 5
+fc_hidden_feats: 3000
