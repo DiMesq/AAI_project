@@ -16,7 +16,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib import pyplot as plt
 import models
-from pcam_dataset import PcamDataset
+from omniglot_dataset import get_dataloaders
 
 NUM_CLASSES = 964
 
@@ -43,69 +43,6 @@ def initialize_model(model_name, hyperparams_path):
         requires_stroke_data = True
         input_size = 28
     return model, input_size, requires_stroke_data
-
-
-def get_dataloaders(input_size, local, test_run, negative_only=False):
-    images_path = '/scratch/dam740/DLM/data/images/train'
-    train_labels_path = '/scratch/dam740/DLM/data/train_labels.csv'
-    val_labels_path = '/scratch/dam740/DLM/data/val_labels.csv'
-
-    if test_run:
-        train_labels_path = f"{train_labels_path[:train_labels_path.find('.csv')]}_small.csv"
-        val_labels_path = f"{val_labels_path[:val_labels_path.find('.csv')]}_small.csv"
-
-    if local:
-        images_path = 'data/local_test'
-        train_labels_path = 'data/test_labels.csv'
-        val_labels_path = 'data/test_labels.csv'
-
-    train_transformations = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize(input_size),
-        transforms.RandomChoice([
-                                 transforms.ColorJitter(brightness=.5),
-                                 transforms.ColorJitter(contrast=.5),
-                                 transforms.ColorJitter(saturation=.5),
-                                 transforms.ColorJitter(hue=.5),
-                                 transforms.ColorJitter(.1, .1, .1, .1),
-                                 transforms.ColorJitter(.3, .3, .3, .3),
-                                 transforms.ColorJitter(.5, .5, .5, .5),
-                                ]),
-        transforms.RandomChoice([
-                                transforms.RandomRotation((0, 0)),
-                                transforms.RandomRotation((90, 90)),
-                                transforms.RandomRotation((180, 180)),
-                                transforms.RandomRotation((270, 270)),
-                                transforms.RandomHorizontalFlip(p=1),
-                                transforms.RandomVerticalFlip(p=1),
-                                transforms.Compose([
-                                                    transforms.RandomHorizontalFlip(p=1),
-                                                    transforms.RandomRotation((90, 90))
-                                                    ]),
-                                transforms.Compose([
-                                                    transforms.RandomHorizontalFlip(p=1),
-                                                    transforms.RandomRotation((270, 270))
-                                                    ])
-
-                                ]),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-
-    val_transformations = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize(input_size),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-
-    # train data loader
-    train_dataset = PcamDataset(images_path, train_labels_path, train_transformations, negative_only)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-
-    # val data loader
-    val_dataset = PcamDataset(images_path, val_labels_path, val_transformations, negative_only)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
-
-    return {'train': train_loader, 'val': val_loader}
 
 
 def get_log_path(model_name, local, run_id):
@@ -136,7 +73,7 @@ def get_run_id(local):
     return str(myid)
 
 
-def train_loop(model, dataloaders, optimizer, criterion, num_epochs, model_path, max_stale=10, negative_only=False):
+def train_loop(model, dataloaders, optimizer, criterion, num_epochs, model_path, max_stale=10, one_class_only=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'val_auc': []}
     best_auc = -1
@@ -200,11 +137,11 @@ def train_loop(model, dataloaders, optimizer, criterion, num_epochs, model_path,
 
                 if phase == 'val':
                     # AUC-ROC
-                    epoch_auc = roc_auc_score(y_true, y_predicted_probs) if not negative_only else 0
+                    epoch_auc = roc_auc_score(y_true, y_predicted_probs) if not one_class_only else 0
                     history[f'{phase}_auc'].append(epoch_auc)
                     logging.info(f'\t\t- ROC-AUC: {epoch_auc:.4f}')
 
-                    if negative_only:
+                    if one_class_only:
                         epoch_auc = epoch_acc
 
                     if epoch_auc > best_auc:
@@ -254,7 +191,7 @@ def plot_train_curves(curves_dict, model_path):
 
 
 def train(model_name, num_epochs, model_path, local, test_run,
-          training_kind=None, negative_only=False, max_stale=10):
+          training_kind=None, one_class_only=False, max_stale=10):
     lr = 0.001
     batch_size = 16
     logging.info(f'Parameters:\n\t- num_epochs: {num_epochs}\n\t- batch_size: {batch_size}')
@@ -275,7 +212,7 @@ def train(model_name, num_epochs, model_path, local, test_run,
 
     # data
     dataloaders = get_dataloaders(input_size, requires_stroke_data, local,
-                                  test_run, negative_only)
+                                  test_run, one_class_only)
 
     # optimizer
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -289,7 +226,7 @@ def train(model_name, num_epochs, model_path, local, test_run,
 
     # train loop
     history = train_loop(model, dataloaders, optimizer, criterion, num_epochs,
-                         model_path, negative_only=negative_only,
+                         model_path, one_class_only=one_class_only,
                          max_stale=max_stale)
     save_history(history, model_path)
     plot_train_curves(history, model_path)
