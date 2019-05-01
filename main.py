@@ -9,12 +9,14 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib import pyplot as plt
+from scipy.spatial.distance import cosine
 import models
 from omniglot_dataset import get_dataloaders
 
@@ -73,7 +75,7 @@ def get_run_id(local):
     return str(myid)
 
 
-def train_loop(model, dataloaders, optimizer, criterion, num_epochs, model_path, max_stale=10, one_class_only=False):
+def train_loop(model, dataloaders, optimizer, criterion, device, num_epochs, model_path, max_stale=10, one_class_only=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'val_auc': []}
     best_auc = -1
@@ -117,6 +119,7 @@ def train_loop(model, dataloaders, optimizer, criterion, num_epochs, model_path,
 
                 running_loss += loss
                 y_predicted_probs_batch, y_predicted_batch = out.max(1)
+                y_predicted_probs_batch = F.softmax(y_predicted_probs_batch, dim=1)
                 running_correct += torch.eq(y_predicted_batch, y).sum()
 
                 if phase == 'val':
@@ -197,9 +200,9 @@ def train(model_name, num_epochs, model_path, local, test_run,
     logging.info(f'Parameters:\n\t- num_epochs: {num_epochs}\n\t- batch_size: {batch_size}')
 
     # model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if training_kind == 'new':
         model, input_size, requires_stroke_data = initialize_model(model_name)
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
     elif training_kind == 'resume':
         # todo
@@ -211,7 +214,7 @@ def train(model_name, num_epochs, model_path, local, test_run,
         raise NotImplementedError()
 
     # data
-    dataloaders = get_dataloaders(input_size, requires_stroke_data, local,
+    dataloaders = get_dataloaders(input_size, batch_size, requires_stroke_data, local,
                                   test_run, one_class_only)
 
     # optimizer
@@ -225,8 +228,8 @@ def train(model_name, num_epochs, model_path, local, test_run,
     logging.info(f'Model parameters:\n{model}')
 
     # train loop
-    history = train_loop(model, dataloaders, optimizer, criterion, num_epochs,
-                         model_path, one_class_only=one_class_only,
+    history = train_loop(model, dataloaders, optimizer, criterion, device,
+                         num_epochs, model_path, one_class_only=one_class_only,
                          max_stale=max_stale)
     save_history(history, model_path)
     plot_train_curves(history, model_path)
