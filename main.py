@@ -6,7 +6,6 @@ import json
 import yaml
 from parse_args import parse_args
 import torch
-from torch.utils.data import DataLoader
 from torchvision import transforms
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,6 +22,10 @@ from omniglot_dataset import get_dataloaders
 NUM_CLASSES = 964
 
 
+def get_root_dir(local):
+    return '/scratch/dam740/AAI_project/logs/' if not local else 'logs'
+
+
 def parse_hyperparams(hyperparams_path):
     with open(hyperparams_path, 'r') as stream:
         try:
@@ -33,23 +36,25 @@ def parse_hyperparams(hyperparams_path):
 
 def initialize_model(model_name, hyperparams_path):
     if model_name == 'cnn':
+        image_size = 28
         hyperparams = parse_hyperparams(hyperparams_path)
         hyperparams['fc_out_feats'] = NUM_CLASSES
+        hyperparams['image_size'] = image_size
         model = models.CNN(**hyperparams)
         requires_stroke_data = False
-        input_size = 28
     elif model_name == 'cnn_rnn':
+        image_size = 28
         hyperparams = parse_hyperparams(hyperparams_path)
         hyperparams['fc_out_feats'] = NUM_CLASSES
+        hyperparams['image_size'] = image_size
         model = models.CNN_RNN(**hyperparams)
         requires_stroke_data = True
-        input_size = 28
-    return model, input_size, requires_stroke_data
+    return model, image_size, requires_stroke_data
 
 
 def get_log_path(model_name, local, run_id):
-    root_dir = '/scratch/dam740/DLM/logs/' if not local else 'logs'
-    log_path = os.path.join(root_dir, "{'model_name'}_{run_id}.log")
+    root_dir = get_root_dir(local)
+    log_path = os.path.join(root_dir, f'{model_name}_{run_id}.log')
     return log_path
 
 
@@ -59,26 +64,35 @@ def get_log_path(model_name, local, run_id):
 
 
 def get_model_path(model_name, local, run_id):
-    root_dir = 'models' if local else '/scratch/dam740/DLM/models'
+    root_dir = 'models' if local else '/scratch/dam740/AAI_project/models'
     model_path = f'{root_dir}/{model_name}_{run_id}'
     os.makedirs(model_path)
     return model_path
 
 
 def get_run_id(local):
-    root_dir = 'models' if local else '/scratch/dam740/DLM/models'
+    root_dir = 'models' if local else '/scratch/dam740/AAI_project/models'
     files = os.listdir(root_dir)
     if files:
-        myid = max([int(file.strip().split('_')[-1]) for file in files]) + 1
+        myid = max([int(file.strip().split('_')[-2]) for file in files]) + 1
     else:
         myid = 1
-    return str(myid)
+    return f'{myid}_{np.random.randint(1, 100, 1)[0]:02d}'
 
 
-def train_loop(model, dataloaders, optimizer, criterion, device, num_epochs, model_path, max_stale=10, one_class_only=False):
+def make_checkpoint_dict(model, acc, epoch):
+    return {
+        'state_dict': model.state_dict(),
+        'accuracy': acc,
+        'epoch': epoch,
+    }
+
+
+def train_loop(model, dataloaders, requires_stroke_data, optimizer, criterion, device, num_epochs,
+               model_path, max_stale=10, one_class_only=False, test_run=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'val_auc': []}
-    best_auc = -1
+    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
+    best_acc = -1
     stale_counter = 0
     for epoch in range(num_epochs):
         logging.info(f'## EPOCH {epoch + 1}')
@@ -93,24 +107,23 @@ def train_loop(model, dataloaders, optimizer, criterion, device, num_epochs, mod
                 model.train()
             elif phase == 'val':
                 model.eval()
-                y_true = []
-                y_predicted_probs = []
 
             running_loss = 0.0
             running_correct = 0.0
 
-            for x, y in loader:
-                x = x.to(device)
-                y = y.to(device)
+            for images, strokes, labels in loader:
+                images = images.to(device)
+                strokes = strokes.to(device) if requires_stroke_data else None
+                labels = labels.to(device)
 
                 # restart grads
                 optimizer.zero_grad()
 
                 with torch.set_grad_enabled(phase == 'train'):
                     # forward
-                    out = model(x)
+                    out, _, _ = model(images, strokes) if requires_stroke_data else model(images)
                     # loss
-                    loss = criterion(out, y)
+                    loss = criterion(out, labels)
                     if phase == 'train':
                         # backward
                         loss.backward()
@@ -118,13 +131,8 @@ def train_loop(model, dataloaders, optimizer, criterion, device, num_epochs, mod
                         optimizer.step()
 
                 running_loss += loss
-                y_predicted_probs_batch, y_predicted_batch = out.max(1)
-                y_predicted_probs_batch = F.softmax(y_predicted_probs_batch, dim=1)
-                running_correct += torch.eq(y_predicted_batch, y).sum()
-
-                if phase == 'val':
-                    y_true.extend(y.cpu().tolist())
-                    y_predicted_probs.extend(y_predicted_probs_batch.cpu().tolist())
+                _, y_predicted_batch = out.max(1)
+                running_correct += torch.eq(y_predicted_batch, labels).sum()
 
                 logging.info(f'\t{phase}:')
 
@@ -139,33 +147,27 @@ def train_loop(model, dataloaders, optimizer, criterion, device, num_epochs, mod
                 logging.info(f'\t\t- Acc: {epoch_acc:.2f}')
 
                 if phase == 'val':
-                    # AUC-ROC
-                    epoch_auc = roc_auc_score(y_true, y_predicted_probs) if not one_class_only else 0
-                    history[f'{phase}_auc'].append(epoch_auc)
-                    logging.info(f'\t\t- ROC-AUC: {epoch_auc:.4f}')
+                    if test_run:
+                        epoch_acc = history['train_acc'][-1]
 
-                    if one_class_only:
-                        epoch_auc = epoch_acc
-
-                    if epoch_auc > best_auc:
-                        best_auc = epoch_auc
-                        torch.save(model.state_dict(), f'{model_path}/best_model.pt')
+                    if epoch_acc > best_acc:
+                        best_acc = epoch_acc
+                        checkpoint = make_checkpoint_dict(model, epoch_acc, epoch + 1)
+                        torch.save(checkpoint, f'{model_path}/best_model.pt')
                         stale_counter = 0
                     else:
                         stale_counter += 1
 
-                    logging.info(f'\t\t- best ROC-AUC: {best_auc:.4f}')
+                    logging.info(f'\t\t- Best Acc: {best_acc:.2f}')
 
                     # save last epoch model
-                    torch.save(model.state_dict(), f'{model_path}/last_model.pt')
+                    checkpoint = make_checkpoint_dict(model, epoch_acc, epoch + 1)
+                    torch.save(checkpoint, f'{model_path}/last_model.pt')
 
                     if (epoch + 1) % 2 == 0:
                         save_history(history, model_path)
                         plot_train_curves(history, model_path)
-
                 logging.info(f'\t\t- time: {time.time() - start:.2f} s')
-
-
     return history
 
 
@@ -177,7 +179,7 @@ def save_history(history, model_path):
 def plot_train_curves(curves_dict, model_path):
     fig, ax = plt.subplots(3, 2)
     curves_names = list(curves_dict.keys())
-    for r in range(3):
+    for r in range(2):
         for c in range(2):
             i = 2 * r + c
             if i > 4:
@@ -193,8 +195,8 @@ def plot_train_curves(curves_dict, model_path):
     plt.close()
 
 
-def train(model_name, num_epochs, model_path, local, test_run,
-          training_kind=None, one_class_only=False, max_stale=10):
+def train(model_name, model_path, hyperparams_path, training_kind, local,
+          test_run, one_class_only=False, num_epochs=100, max_stale=10):
     lr = 0.001
     batch_size = 16
     logging.info(f'Parameters:\n\t- num_epochs: {num_epochs}\n\t- batch_size: {batch_size}')
@@ -202,7 +204,8 @@ def train(model_name, num_epochs, model_path, local, test_run,
     # model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if training_kind == 'new':
-        model, input_size, requires_stroke_data = initialize_model(model_name)
+        model, image_size, requires_stroke_data = initialize_model(model_name,
+                                                                   hyperparams_path)
         model = model.to(device)
     elif training_kind == 'resume':
         # todo
@@ -214,7 +217,7 @@ def train(model_name, num_epochs, model_path, local, test_run,
         raise NotImplementedError()
 
     # data
-    dataloaders = get_dataloaders(input_size, batch_size, requires_stroke_data, local,
+    dataloaders = get_dataloaders(image_size, batch_size, requires_stroke_data, local,
                                   test_run, one_class_only)
 
     # optimizer
@@ -228,9 +231,10 @@ def train(model_name, num_epochs, model_path, local, test_run,
     logging.info(f'Model parameters:\n{model}')
 
     # train loop
-    history = train_loop(model, dataloaders, optimizer, criterion, device,
-                         num_epochs, model_path, one_class_only=one_class_only,
-                         max_stale=max_stale)
+    history = train_loop(model, dataloaders, requires_stroke_data, optimizer,
+                         criterion, device, num_epochs, model_path,
+                         one_class_only=one_class_only, max_stale=max_stale,
+                         test_run=test_run)
     save_history(history, model_path)
     plot_train_curves(history, model_path)
 

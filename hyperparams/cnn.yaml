@@ -1,0 +1,5 @@
+# Hyperparams for CNN
+layers:
+ - 120
+ - 300
+kernel_size: 5
