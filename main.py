@@ -17,9 +17,8 @@ matplotlib.use("TkAgg")
 from matplotlib import pyplot as plt
 from scipy.spatial.distance import cosine
 import models
+from constants import *
 from omniglot_dataset import get_dataloaders
-
-NUM_CLASSES = 964
 
 
 def get_root_dir(local):
@@ -38,15 +37,16 @@ def initialize_model(model_name, hyperparams_path):
     if model_name == 'cnn':
         image_size = 28
         hyperparams = parse_hyperparams(hyperparams_path)
-        hyperparams['fc_out_feats'] = NUM_CLASSES
+        hyperparams['num_classes'] = NUM_CLASSES
         hyperparams['image_size'] = image_size
         model = models.CNN(**hyperparams)
         requires_stroke_data = False
     elif model_name == 'cnn_rnn':
         image_size = 28
         hyperparams = parse_hyperparams(hyperparams_path)
-        hyperparams['fc_out_feats'] = NUM_CLASSES
-        hyperparams['image_size'] = image_size
+        hyperparams['rnn_input_size'] = STROKE_INPUT_SIZE
+        hyperparams['num_classes'] = NUM_CLASSES
+        hyperparams['cnn_input_size'] = image_size
         model = models.CNN_RNN(**hyperparams)
         requires_stroke_data = True
     return model, image_size, requires_stroke_data

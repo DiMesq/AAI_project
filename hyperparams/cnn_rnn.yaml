@@ -1,0 +1,10 @@
+# Hyperparams for CNN
+cnn_layers:
+ - 120
+ - 300
+cnn_kernel_size: 5
+cnn_hidden_size: 1000
+cnn_dropout: 0.
+rnn_hidden_size: 500
+rnn_dropout: 0
+fc_dropout: 0.5
