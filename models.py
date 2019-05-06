@@ -162,7 +162,7 @@ class CNN_RNN(nn.Module):
         self.rnn = RNN(rnn_input_size, rnn_hidden_size, num_layers=3, dropout=rnn_dropout)
         # RNN is bidirectional
         fc_in_size = cnn_hidden_size if pool_kind == 'add' else cnn_hidden_size + 2 * rnn_hidden_size
-        fc_hidden_size = 500 if fc_num_layers > 2 else 3000
+        fc_hidden_size = 1500 if fc_num_layers > 2 else 3000
 
         self.fc_initial = nn.Sequential(
             nn.Linear(fc_in_size, fc_hidden_size),
@@ -234,9 +234,25 @@ if __name__ == '__main__':
     num_classes = 964
     model = CNN(input_size, layers, kernel_size, num_classes=964)
     out, h_fc, h_cnn = model(x)
-    assert(h_cnn.size() == (batch_size, layers[-1], 8, 8))
-    assert(h_fc.size() == (batch_size, 3000))
-    assert(out.size() == (batch_size, 964))
+    assert(h_cnn.size() == (batch_size, layers[-1], input_size / 2 ** (len(layers)), input_size / 2 ** (len(layers))))
+    assert(h_fc.size() == (batch_size, fc_hidden_size))
+    assert(out.size() == (batch_size, num_classes))
+
+    # test CNN
+    batch_size = 32
+    in_channels = 1
+    input_size = 105
+    x = torch.randn(batch_size, in_channels, input_size, input_size)
+
+    layers = [120, 300]
+    kernel_size = 5
+    fc_hidden_size = 3000
+    num_classes = 964
+    model = CNN(input_size, layers, kernel_size, num_classes=964)
+    out, h_fc, h_cnn = model(x)
+    assert(h_cnn.size() == (batch_size, layers[-1], 26, 26))
+    assert(h_fc.size() == (batch_size, fc_hidden_size))
+    assert(out.size() == (batch_size, num_classes))
 
     # test RNN
     B, T, I, H, L = 3, 70, 2, 5, 3
@@ -260,7 +276,7 @@ if __name__ == '__main__':
                     cnn_hidden_size=H_CNN, rnn_input_size=I, rnn_hidden_size=H_RNN,
                     cnn_dropout=0, rnn_dropout=0, pool_kind='cat', fc_num_layers=fc_num_layers, fc_dropout=0.5)
 
-    h_fc2_size = 500 if fc_num_layers > 2 else 3000
+    h_fc2_size = 1500 if fc_num_layers > 2 else 3000
     print("CNN+RNN model:")
     print(model)
     h_fc3, h_fc2, h_final = model(images, strokes, num_strokes, stroke_lens)
@@ -280,7 +296,7 @@ if __name__ == '__main__':
     model = CNN_RNN(num_classes, cnn_input_size=28, cnn_layers=[120, 300], cnn_kernel_size=5,
                     cnn_hidden_size=H_CNN, rnn_input_size=I, rnn_hidden_size=H_RNN,
                     cnn_dropout=0, rnn_dropout=0, pool_kind='add', fc_num_layers=fc_num_layers, fc_dropout=0.5)
-    h_fc2_size = 500 if fc_num_layers > 2 else 3000
+    h_fc2_size = 1500 if fc_num_layers > 2 else 3000
     h_fc3, h_fc2, h_final = model(images, strokes, num_strokes, stroke_lens)
     assert(h_final.size() == (B, 2 * min([H_CNN, H_RNN])))
     assert(h_fc2.size() == (B, h_fc2_size))
