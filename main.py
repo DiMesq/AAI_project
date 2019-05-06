@@ -49,6 +49,8 @@ def initialize_model(model_name, hyperparams_path):
         hyperparams['cnn_input_size'] = image_size
         model = models.CNN_RNN(**hyperparams)
         requires_stroke_data = True
+    logging.info('Hyperparams:')
+    logging.info(json.dumps(hyperparams, indent=2))
     return model, image_size, requires_stroke_data
 
 
@@ -111,9 +113,11 @@ def train_loop(model, dataloaders, requires_stroke_data, optimizer, criterion, d
             running_loss = 0.0
             running_correct = 0.0
 
-            for images, strokes, labels in loader:
+            for images, strokes, num_strokes, strokes_len, labels in loader:
                 images = images.to(device)
                 strokes = strokes.to(device) if requires_stroke_data else None
+                num_strokes = num_strokes.to(device) if requires_stroke_data else None
+                strokes_len = strokes_len.to(device) if requires_stroke_data else None
                 labels = labels.to(device)
 
                 # restart grads
@@ -121,7 +125,8 @@ def train_loop(model, dataloaders, requires_stroke_data, optimizer, criterion, d
 
                 with torch.set_grad_enabled(phase == 'train'):
                     # forward
-                    out, _, _ = model(images, strokes) if requires_stroke_data else model(images)
+                    out, _, _ = model(images, strokes, num_strokes, strokes_len)\
+                                if requires_stroke_data else model(images)
                     # loss
                     loss = criterion(out, labels)
                     if phase == 'train':
@@ -134,40 +139,40 @@ def train_loop(model, dataloaders, requires_stroke_data, optimizer, criterion, d
                 _, y_predicted_batch = out.max(1)
                 running_correct += torch.eq(y_predicted_batch, labels).sum()
 
-                logging.info(f'\t{phase}:')
+            logging.info(f'\t{phase}:')
 
-                # avg loss per batch
-                epoch_loss = (running_loss / len(loader)).cpu().item()
-                history[f'{phase}_loss'].append(epoch_loss)
-                logging.info(f'\t\t- Loss: {epoch_loss:.4f}')
+            # avg loss per batch
+            epoch_loss = (running_loss / len(loader)).cpu().item()
+            history[f'{phase}_loss'].append(epoch_loss)
+            logging.info(f'\t\t- Loss: {epoch_loss:.4f}')
 
-                # accuracy in this epoch
-                epoch_acc = 100 * running_correct.to(device='cpu', dtype=torch.double).item() / len(loader.dataset)
-                history[f'{phase}_acc'].append(epoch_acc)
-                logging.info(f'\t\t- Acc: {epoch_acc:.2f}')
+            # accuracy in this epoch
+            epoch_acc = 100 * running_correct.to(device='cpu', dtype=torch.double).item() / len(loader.dataset)
+            history[f'{phase}_acc'].append(epoch_acc)
+            logging.info(f'\t\t- Acc: {epoch_acc:.2f}')
 
-                if phase == 'val':
-                    if test_run:
-                        epoch_acc = history['train_acc'][-1]
+            if phase == 'val':
+                if test_run:
+                    epoch_acc = history['train_acc'][-1]
 
-                    if epoch_acc > best_acc:
-                        best_acc = epoch_acc
-                        checkpoint = make_checkpoint_dict(model, epoch_acc, epoch + 1)
-                        torch.save(checkpoint, f'{model_path}/best_model.pt')
-                        stale_counter = 0
-                    else:
-                        stale_counter += 1
-
-                    logging.info(f'\t\t- Best Acc: {best_acc:.2f}')
-
-                    # save last epoch model
+                if epoch_acc > best_acc:
+                    best_acc = epoch_acc
                     checkpoint = make_checkpoint_dict(model, epoch_acc, epoch + 1)
-                    torch.save(checkpoint, f'{model_path}/last_model.pt')
+                    torch.save(checkpoint, f'{model_path}/best_model.pt')
+                    stale_counter = 0
+                else:
+                    stale_counter += 1
 
-                    if (epoch + 1) % 2 == 0:
-                        save_history(history, model_path)
-                        plot_train_curves(history, model_path)
-                logging.info(f'\t\t- time: {time.time() - start:.2f} s')
+                logging.info(f'\t\t- Best Acc: {best_acc:.2f}')
+
+                # save last epoch model
+                checkpoint = make_checkpoint_dict(model, epoch_acc, epoch + 1)
+                torch.save(checkpoint, f'{model_path}/last_model.pt')
+
+                if (epoch + 1) % 2 == 0:
+                    save_history(history, model_path)
+                    plot_train_curves(history, model_path)
+            logging.info(f'\t\t- time: {time.time() - start:.2f} s')
     return history
 
 
@@ -195,10 +200,11 @@ def plot_train_curves(curves_dict, model_path):
     plt.close()
 
 
-def train(model_name, model_path, hyperparams_path, training_kind, local,
-          test_run, one_class_only=False, num_epochs=100, max_stale=10):
+def train(model_name, model_path, hyperparams_path, training_kind,
+          strokes_raw, local, test_run, one_class_only=False,
+          num_epochs=100, max_stale=10):
     lr = 0.001
-    batch_size = 16
+    batch_size = 25
     logging.info(f'Parameters:\n\t- num_epochs: {num_epochs}\n\t- batch_size: {batch_size}')
 
     # model
@@ -217,8 +223,8 @@ def train(model_name, model_path, hyperparams_path, training_kind, local,
         raise NotImplementedError()
 
     # data
-    dataloaders = get_dataloaders(image_size, batch_size, requires_stroke_data, local,
-                                  test_run, one_class_only)
+    dataloaders = get_dataloaders(image_size, batch_size, requires_stroke_data,
+                                  strokes_raw, local, test_run, one_class_only)
 
     # optimizer
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -228,7 +234,7 @@ def train(model_name, model_path, hyperparams_path, training_kind, local,
 
     logging.info(f'Optimizer:\n{optimizer}')
     logging.info(f'Loss function: {criterion}')
-    logging.info(f'Model parameters:\n{model}')
+    logging.info(f'Model:\n{model}')
 
     # train loop
     history = train_loop(model, dataloaders, requires_stroke_data, optimizer,
