@@ -1,4 +1,5 @@
 import os.path
+import sys
 import glob
 import copy
 from PIL import Image
@@ -33,10 +34,15 @@ def translate_image(img):
     img: PIL Image
     '''
     Tx, Ty = get_translations(img)
-    return F.affine(img, 0, (Tx, Ty), 1, 0, fillcolor=255)
+    return F.affine(img, 0, (Tx, Ty), 1, 0, fillcolor=255), Tx, Ty
 
 
-def main():
+def write_translations(Tx, Ty, path):
+    with open(path, 'w') as fout:
+        fout.write(f'{Tx},{Ty}\n')
+
+
+def main(save_translations_only):
     '''
     Centers train and eval images by center of mass
     '''
@@ -46,9 +52,13 @@ def main():
     for in_dir, out_dir in zip(in_dirs, out_dirs):
         for file_path in glob.iglob(in_dir + '/*png'):
             img = Image.open(file_path)
-            img_transl = translate_image(img)
-            img_transl.save(f'{out_dir}/{os.path.basename(file_path)}')
+            img_transl, Tx, Ty = translate_image(img)
+            if not save_translations_only:
+                img_transl.save(f'{out_dir}/{os.path.basename(file_path)}')
+            file_name = os.path.basename(file_path).strip('.png') + '.txt'
+            write_translations(Tx, Ty, f'data/images_translations/{file_name}')
 
 
 if __name__ == '__main__':
-    main()
+    save_translations_only = True if len(sys.argv) > 1 else False
+    main(save_translations_only)
