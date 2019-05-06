@@ -51,6 +51,7 @@ def initialize_model(model_name, hyperparams_path):
         requires_stroke_data = True
     logging.info('Hyperparams:')
     logging.info(json.dumps(hyperparams, indent=2))
+    logging.info(f"requires_stroke_data: {requires_stroke_data}")
     return model, image_size, requires_stroke_data
 
 
@@ -202,13 +203,15 @@ def plot_train_curves(curves_dict, model_path):
 
 def train(model_name, model_path, hyperparams_path, training_kind,
           strokes_raw, local, test_run, one_class_only=False,
-          num_epochs=100, max_stale=10):
+          num_epochs=400, max_stale=10):
     lr = 0.001
     batch_size = 25
     logging.info(f'Parameters:\n\t- num_epochs: {num_epochs}\n\t- batch_size: {batch_size}')
 
     # model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logging.info(f"Device: {device}")
+
     if training_kind == 'new':
         model, image_size, requires_stroke_data = initialize_model(model_name,
                                                                    hyperparams_path)

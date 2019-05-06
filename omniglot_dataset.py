@@ -141,6 +141,10 @@ class OmniglotDataset(Dataset):
         self.requires_stroke_data = requires_stroke_data
         self.transforms = transforms
 
+        logging.info(f'Images path: {images_path}')
+        logging.info(f'requires_stroke_data: {requires_stroke_data}')
+        logging.info(f'Labels path: {labels_path}')
+
         df_labels = pd.read_csv(labels_path)
         self.labels = df_labels['label'].values
         self.examples_id = df_labels['example_id'].values

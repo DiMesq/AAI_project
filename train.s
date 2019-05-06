@@ -20,7 +20,6 @@ python main.py -m $model_name train --training-kind $training_kind --hyperparams
 
 # test-run server
 #python main.py -m cnn --test-run train --training-kind new --hyperparams-path /scratch/dam740/AAI_project/hyperparams/cnn.yaml
-#python main.py -m cnn_rnn --test-run train --training-kind new --hyperparams-path /scratch/dam740/AAI_project/hyperparams/cnn_rnn_add.yaml
 
 # local command
 # python main.py -m cnn_rnn --test-run --local train --training-kind new --hyperparams-path hyperparams/cnn_rnn_add.yaml
