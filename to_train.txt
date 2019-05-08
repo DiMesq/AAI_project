@@ -1,1 +1,1 @@
-cnn_rnn new /scratch/dam740/AAI_project/hyperparams/cnn_rnn_add.yaml
+cnn_rnn /scratch/dam740/AAI_project/hyperparams/cnn_rnn_cat.yaml

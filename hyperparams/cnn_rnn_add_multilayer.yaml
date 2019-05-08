@@ -6,10 +6,10 @@ cnn_layers:
 cnn_kernel_size: 5
 cnn_hidden_size: 1000
 cnn_dropout: 0.
-rnn_num_layers: 1
+rnn_num_layers: 3
 rnn_hidden_size: 500
 rnn_num_directions: 2
 rnn_dropout: 0
-pool_kind: cat
+pool_kind: add
 fc_num_layers: 2
 fc_dropout: 0.5

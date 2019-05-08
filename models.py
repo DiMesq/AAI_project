@@ -18,6 +18,18 @@ def weight_init(m):
             else:
                 nn.init.normal_(param.data)
 
+def modify_CNN_RNN_for_finetune(model):
+    model.rnn = Identity()
+    return model
+
+class Identity(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
+
 
 class ConvolutionalLayer(nn.Module):
 
@@ -43,12 +55,15 @@ class ConvolutionalLayer(nn.Module):
 
 class RNN(nn.Module):
 
-    def __init__(self, input_size, hidden_size, num_layers, bidirectional=True, dropout=0.):
+    def __init__(self, input_size, hidden_size, num_layers,
+                 num_directions, dropout=0.):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.num_directions = 2 if bidirectional else 1
-        self.gru = nn.GRU(input_size, self.hidden_size, num_layers=self.num_layers, batch_first=True,
+        self.num_directions = num_directions
+        bidirectional = True if self.num_directions > 1 else False
+        self.gru = nn.GRU(input_size, self.hidden_size,
+                          num_layers=self.num_layers, batch_first=True,
                           dropout=dropout, bidirectional=bidirectional)
         self.gru.apply(weight_init)
 
@@ -93,8 +108,6 @@ class RNN(nn.Module):
 
 class CNN(nn.Module):
     '''
-    Expects square images with even number of pixels for H and W (eg 7x7 does not work)
-    H and W must each satisfy: (H / 2^{num_layers}) % 2 == 0
     '''
 
     def __init__(self, image_size, layers, kernel_size, num_classes=None,
@@ -148,23 +161,31 @@ class CNN(nn.Module):
 class CNN_RNN(nn.Module):
 
     def __init__(self, num_classes, cnn_input_size, cnn_layers, cnn_kernel_size,
-                 cnn_hidden_size, cnn_dropout, rnn_input_size, rnn_hidden_size,
-                 rnn_dropout, pool_kind, fc_num_layers, fc_dropout):
+                 cnn_hidden_size, cnn_dropout, rnn_input_size, rnn_num_layers,
+                 rnn_hidden_size, rnn_num_directions, rnn_dropout, pool_kind,
+                 fc_num_layers, fc_dropout):
         super().__init__()
         self.pool_kind = pool_kind
+        self.rnn_num_directions = rnn_num_directions
         if self.pool_kind == 'add':
             hidden_size = min([cnn_hidden_size, rnn_hidden_size])
             # have to multiply hidden_size by 2 because RNN is bidirectional
-            cnn_hidden_size, rnn_hidden_size = 2 * hidden_size, hidden_size
+            self.cnn_hidden_size, self.rnn_hidden_size = self.rnn_num_directions * hidden_size, hidden_size
+        else:
+            self.cnn_hidden_size, self.rnn_hidden_size = cnn_hidden_size, rnn_hidden_size
+
         self.cnn = CNN(cnn_input_size, cnn_layers, cnn_kernel_size,
-                       classifier=False, global_pool_hidden_size=cnn_hidden_size,
+                       classifier=False,
+                       global_pool_hidden_size=self.cnn_hidden_size,
                        cnn_dropout=cnn_dropout)
-        self.rnn = RNN(rnn_input_size, rnn_hidden_size, num_layers=3, dropout=rnn_dropout)
+        self.rnn = RNN(rnn_input_size, self.rnn_hidden_size,
+                       rnn_num_layers, rnn_num_directions, dropout=rnn_dropout)
         # RNN is bidirectional
-        fc_in_size = cnn_hidden_size if pool_kind == 'add' else cnn_hidden_size + 2 * rnn_hidden_size
+        fc_in_size = self.cnn_hidden_size if pool_kind == 'add'\
+            else self.cnn_hidden_size + self.rnn_num_directions * self.rnn_hidden_size
         fc_hidden_size = 1500 if fc_num_layers > 2 else 3000
 
-        self.fc_initial = nn.Sequential(
+        self.fc1 = nn.Sequential(
             nn.Linear(fc_in_size, fc_hidden_size),
             nn.ReLU(),
             nn.Dropout(fc_dropout))
@@ -176,10 +197,16 @@ class CNN_RNN(nn.Module):
                 nn.ReLU(),
                 nn.Dropout(fc_dropout),
             ])
-        self.fc_middle = nn.Sequential(*middle_layers)
-        self.fc_final = nn.Linear(fc_hidden_size, num_classes)
+        self.fc2 = nn.Sequential(*middle_layers)
+        self.fc3 = nn.Linear(fc_hidden_size, num_classes)
 
-    def forward(self, images, strokes, num_strokes, strokes_lens):
+        # self.dropout = nn.Dropout(fc_dropout)
+        # self.relu = nn.ReLU()
+        # self.fc1 = nn.Linear(fc_in_size, fc_hidden_size)
+        # self.fc2 = nn.Linear(fc_hidden_size, fc_hidden_size)
+        # self.fc3 = nn.Linear(fc_hidden_size, num_classes)
+
+    def forward(self, images, *strokes_data):
         '''
         images: (B, 1, H, W)
         strokes: (B, S, T, 2)
@@ -189,104 +216,133 @@ class CNN_RNN(nn.Module):
         where B is size of batch, S is number of strokes, L is length of a stroke
         and 2 is the (x,y) coordinate of point from a stroke
         '''
-        B, S, T, _ = strokes.size()
-        assert(num_strokes.size() == (B, 1))
-        assert(strokes_lens.size() == (B, S, 1))
+        B = images.size(0)
+        if strokes_data and len(strokes_data) == 3:
+            strokes, num_strokes, strokes_lens = strokes_data
+            _, S, T, _ = strokes.size()
+            assert(num_strokes.size() == (B, 1))
+            assert(strokes_lens.size() == (B, S, 1))
 
         _, h_image, _ = self.cnn(images)
-        h_strokes = []
-        for stroke_ix in range(S):
-            # if element in batch doesn't have this stroke then set its
-            # stroke_len to 1. so RNN doesn't throw error. However, must set
-            # the output of RNN to a tensor of zeros later
-            strokes_lens[stroke_ix >= num_strokes.squeeze(dim=1), stroke_ix] = 1.
-            stroke = strokes[:, stroke_ix, :, :]
-            h_stroke = self.rnn(stroke, strokes_lens[:, stroke_ix])
-            # if element in batch doesn't have this stroke then set h to 0's (see above)
-            h_stroke[stroke_ix >= num_strokes.squeeze(dim=1), :] = 0
-            h_strokes.append(h_stroke)
-        # get (B, S, H) where H is self.hidden_size
-        h_strokes = torch.stack(h_strokes, dim=1)
-        # avg: get (B, H)
-        h_strokes = h_strokes.sum(dim=1) / num_strokes
+
+        if strokes_data:
+            h_strokes = []
+            for stroke_ix in range(S):
+                # if element in batch doesn't have this stroke then set its
+                # stroke_len to 1. so RNN doesn't throw error. However, must set
+                # the output of RNN to a tensor of zeros later
+                strokes_lens[stroke_ix >= num_strokes.squeeze(dim=1), stroke_ix] = 1.
+                stroke = strokes[:, stroke_ix, :, :]
+                h_stroke = self.rnn(stroke, strokes_lens[:, stroke_ix])
+                # if element in batch doesn't have this stroke then set h to 0's (see above)
+                h_stroke[stroke_ix >= num_strokes.squeeze(dim=1), :] = 0
+                h_strokes.append(h_stroke)
+            # get (B, S, H) where H is self.hidden_size
+            h_strokes = torch.stack(h_strokes, dim=1)
+            # avg: get (B, H)
+            h_strokes = h_strokes.sum(dim=1) / num_strokes
+        else:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            h_strokes = torch.zeros(B, self.rnn_num_directions * self.rnn_hidden_size).to(device)
 
         if self.pool_kind == 'add':
             h_final = h_image + h_strokes
         else:
             h_final = torch.cat((h_image, h_strokes), dim=1)
 
-        h_fc1 = self.fc_initial(h_final)
-        h_fc2 = self.fc_middle(h_fc1)
-        h_fc3 = self.fc_final(h_fc2)
+        h_fc1 = self.fc1(h_final)
+        h_fc2 = self.fc2(h_fc1)
+        h_fc3 = self.fc3(h_fc2)
+
+        # h_fc1 = self.dropout(self.relu(self.fc1(h_final)))
+        # h_fc2 = self.dropout(self.relu(self.fc2(h_fc1)))
+        # h_fc3 = self.fc3(h_fc2)
+
         return h_fc3, h_fc2, h_final
 
 
 if __name__ == '__main__':
-    # test CNN
+    print('test CNN (even size: 64x64)')
+    start = time.time()
     batch_size = 32
     in_channels = 1
     input_size = 64
     x = torch.randn(batch_size, in_channels, input_size, input_size)
 
-    layers = [200, 400, 200]
+    layers = [20, 40, 50]
     kernel_size = 5
     fc_hidden_size = 3000
     num_classes = 964
-    model = CNN(input_size, layers, kernel_size, num_classes=964)
+    model = CNN(input_size, layers, kernel_size, num_classes=num_classes)
     out, h_fc, h_cnn = model(x)
     assert(h_cnn.size() == (batch_size, layers[-1], input_size / 2 ** (len(layers)), input_size / 2 ** (len(layers))))
     assert(h_fc.size() == (batch_size, fc_hidden_size))
     assert(out.size() == (batch_size, num_classes))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
 
-    # test CNN
+    # test CNN (odd size: 105x105)
+    print('test CNN (odd size: 105x105)')
+    start = time.time()
     batch_size = 32
     in_channels = 1
     input_size = 105
     x = torch.randn(batch_size, in_channels, input_size, input_size)
 
-    layers = [120, 300]
+    layers = [20, 50]
     kernel_size = 5
     fc_hidden_size = 3000
-    num_classes = 964
-    model = CNN(input_size, layers, kernel_size, num_classes=964)
+    num_classes = 20
+    model = CNN(input_size, layers, kernel_size, num_classes=num_classes)
     out, h_fc, h_cnn = model(x)
     assert(h_cnn.size() == (batch_size, layers[-1], 26, 26))
     assert(h_fc.size() == (batch_size, fc_hidden_size))
     assert(out.size() == (batch_size, num_classes))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
 
-    # test RNN
-    B, T, I, H, L = 3, 70, 2, 5, 3
+    print('test RNN')
+    start = time.time()
+    B, T, I, H, L, D = 3, 70, 2, 5, 3, 2
     x = torch.randn(B, T, I)
     x[1, :, :] = 0
     x_lens = torch.LongTensor([63, 1, 70]).unsqueeze(dim=1)
-    model = RNN(I, H, L)
+    model = RNN(I, H, L, D)
     out = model(x, x_lens)
-    assert(out.size() == (B, 2*H))
+    assert(out.size() == (B, D*H))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
 
-    #### test CNN+RNN (pool_kind=cat)
+    print('test CNN+RNN (one direction)')
+    start = time.time()
     num_classes = 964
-    B, S, T, I, H_RNN, H_CNN = 2, 3, 70, 4, 5, 10
+    B, S, T, I, L, H_RNN, H_CNN, D = 2, 3, 70, 4, 1, 5, 10, 1
     fc_num_layers = 4
     images = torch.randn(B, 1, 28, 28)
     strokes = torch.randn(B, S, T, I)
     strokes[1, 2, :] = 0
     num_strokes = torch.FloatTensor([2, 3]).unsqueeze(dim=1)
     stroke_lens = torch.FloatTensor([[61, 67, 0], [64, 65, 70]]).unsqueeze(dim=2)
-    model = CNN_RNN(num_classes, cnn_input_size=28, cnn_layers=[120, 300], cnn_kernel_size=5,
-                    cnn_hidden_size=H_CNN, rnn_input_size=I, rnn_hidden_size=H_RNN,
-                    cnn_dropout=0, rnn_dropout=0, pool_kind='cat', fc_num_layers=fc_num_layers, fc_dropout=0.5)
+    model = CNN_RNN(num_classes, cnn_input_size=28, cnn_layers=[120, 300],
+                    cnn_kernel_size=5, cnn_hidden_size=H_CNN, rnn_input_size=I,
+                    rnn_num_layers=L, rnn_hidden_size=H_RNN, rnn_num_directions=D,
+                    cnn_dropout=0, rnn_dropout=0, pool_kind='add',
+                    fc_num_layers=fc_num_layers, fc_dropout=0.5)
 
     h_fc2_size = 1500 if fc_num_layers > 2 else 3000
     print("CNN+RNN model:")
     print(model)
     h_fc3, h_fc2, h_final = model(images, strokes, num_strokes, stroke_lens)
-    assert(h_final.size() == (B, H_CNN + 2*H_RNN))
+    assert(h_final.size() == (B, D * min([H_RNN, H_CNN])))
     assert(h_fc2.size() == (B, h_fc2_size))
     assert(h_fc3.size() == (B, num_classes))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
 
-    #### test CNN+RNN (pool_kind= add)
+    print('test CNN+RNN (pool_kind= cat)')
+    start = time.time()
     num_classes = 964
-    B, S, T, I, H_RNN, H_CNN = 2, 3, 70, 4, 5, 10
+    B, S, T, I, L, H_RNN, H_CNN, D = 2, 3, 70, 4, 3, 5, 10, 2
     fc_num_layers = 2
     images = torch.randn(B, 1, 28, 28)
     strokes = torch.randn(B, S, T, I)
@@ -294,16 +350,43 @@ if __name__ == '__main__':
     num_strokes = torch.FloatTensor([2, 3]).unsqueeze(dim=1)
     stroke_lens = torch.FloatTensor([[61, 67, 0], [64, 65, 70]]).unsqueeze(dim=2)
     model = CNN_RNN(num_classes, cnn_input_size=28, cnn_layers=[120, 300], cnn_kernel_size=5,
-                    cnn_hidden_size=H_CNN, rnn_input_size=I, rnn_hidden_size=H_RNN,
-                    cnn_dropout=0, rnn_dropout=0, pool_kind='add', fc_num_layers=fc_num_layers, fc_dropout=0.5)
+                    cnn_hidden_size=H_CNN, rnn_input_size=I, rnn_num_layers=L,
+                    rnn_hidden_size=H_RNN, rnn_num_directions=D,
+                    cnn_dropout=0, rnn_dropout=0, pool_kind='cat', fc_num_layers=fc_num_layers, fc_dropout=0.5)
     h_fc2_size = 1500 if fc_num_layers > 2 else 3000
     h_fc3, h_fc2, h_final = model(images, strokes, num_strokes, stroke_lens)
-    assert(h_final.size() == (B, 2 * min([H_CNN, H_RNN])))
+    assert(h_final.size() == (B, H_CNN + D*H_RNN))
     assert(h_fc2.size() == (B, h_fc2_size))
     assert(h_fc3.size() == (B, num_classes))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
 
-    #### test RNN with only 0s: Does it work? Is the output 0?
-    B, T, D, H , L =  3, 3, 2, 4, 2
+    print('test CNN+RNN (not passing strokes to forward)')
+    start = time.time()
+    num_classes = 964
+    B, S, T, I, L, H_RNN, H_CNN, D = 2, 3, 70, 4, 2, 5, 10, 2
+    fc_num_layers = 2
+    images = torch.randn(B, 1, 28, 28)
+    model = CNN_RNN(num_classes, cnn_input_size=28, cnn_layers=[120, 300], cnn_kernel_size=5,
+                    cnn_hidden_size=H_CNN, rnn_input_size=I, rnn_num_layers=L,
+                    rnn_hidden_size=H_RNN, rnn_num_directions=D,
+                    cnn_dropout=0, rnn_dropout=0, pool_kind='cat', fc_num_layers=fc_num_layers, fc_dropout=0.5)
+    model = modify_CNN_RNN_for_finetune(model)
+    print("CNN+RNN finetune model:")
+    print(model)
+    h_fc2_size = 1500 if fc_num_layers > 2 else 3000
+    h_fc3, h_fc2, h_final = model(images)
+    assert(h_final.size() == (B, H_CNN + D*H_RNN))
+    assert(torch.all(torch.eq(h_final[:, H_CNN:], torch.zeros(B, 2*H_RNN))))
+    assert(h_fc2.size() == (B, h_fc2_size))
+    assert(h_fc3.size() == (B, num_classes))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
+
+
+    print('test RNN with only 0s: Does it work? Is the output 0?')
+    start = time.time()
+    B, T, I, H , L, D =  3, 3, 2, 4, 2, 1
 
     x = torch.FloatTensor([
                            [[0, 0], [0, 0], [0, 0]],
@@ -311,12 +394,14 @@ if __name__ == '__main__':
                            [[0, 0], [0, 0], [0, 0]]
                            ])
     x_lens = torch.FloatTensor([1, 2, 1]).unsqueeze(dim=1)
-    model = RNN(D, H, L)
+    model = RNN(I, H, L, D)
     h_rnn = model(x, x_lens)
-    assert(h_rnn[1].size() == (2 * H,))
+    assert(h_rnn[1].size() == (D * H,))
     h_rnn[x_lens.squeeze(dim=1) == 1, :] = 0
     assert(all(torch.eq(h_rnn[0], torch.zeros_like(h_rnn[0]))))
     assert(all(torch.eq(h_rnn[2], torch.zeros_like(h_rnn[2]))))
+    print(f"Test duration: {time.time() - start:.1f} seconds")
+    print('Success!')
 
 
 

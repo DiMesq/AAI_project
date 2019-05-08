@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH --output=slurm_train_%j.out
+#SBATCH --output=slurm_train_logs/slurm_train_%j.out
 #SBATCH --job-name=AAI_proj
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
@@ -14,12 +14,6 @@ source /home/dam740/pytorch_venv/bin/activate
 
 line_number=$SLURM_ARRAY_TASK_ID
 params=$(sed -n ${line_number}p to_train.txt)
-read -r model_name training_kind hyperparams_path <<< $params
+read -r model_name hyperparams_path <<< $params
 
-python main.py -m $model_name train --training-kind $training_kind --hyperparams-path $hyperparams_path
-
-# test-run server
-#python main.py -m cnn --test-run train --training-kind new --hyperparams-path /scratch/dam740/AAI_project/hyperparams/cnn.yaml
-
-# local command
-# python main.py -m cnn_rnn --test-run --local train --training-kind new --hyperparams-path hyperparams/cnn_rnn_add.yaml
+python main.py -m $model_name train --training-kind new --hyperparams-path $hyperparams_path

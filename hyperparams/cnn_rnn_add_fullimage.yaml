@@ -1,5 +1,5 @@
 # Hyperparams for CNN
-cnn_input_size: 28
+cnn_input_size: 105
 cnn_layers:
  - 120
  - 300
@@ -10,6 +10,6 @@ rnn_num_layers: 1
 rnn_hidden_size: 500
 rnn_num_directions: 2
 rnn_dropout: 0
-pool_kind: cat
+pool_kind: add
 fc_num_layers: 2
 fc_dropout: 0.5

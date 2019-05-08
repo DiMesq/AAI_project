@@ -33,7 +33,19 @@ def parse_hyperparams(hyperparams_path):
             print(exc)
             raise
 
-def initialize_model(model_name, hyperparams_path):
+
+def load_model(model, model_name, run_id, local):
+    model_path = get_model_path(model_name, local, run_id)
+    model_path = os.path.join(model_path, 'best_model.pt')
+    logging.info(f"Loading model from {model_path}...")
+    checkpoint = torch.load(model_path)
+    model.load_state_dict(checkpoint['state_dict'])
+    model = models.modify_CNN_RNN_for_finetune(model)
+    return model
+
+
+def initialize_model(model_name, hyperparams_path, device, pretrained=False,
+                     run_id=False, local=False):
     if model_name == 'cnn':
         image_size = 28
         hyperparams = parse_hyperparams(hyperparams_path)
@@ -42,16 +54,22 @@ def initialize_model(model_name, hyperparams_path):
         model = models.CNN(**hyperparams)
         requires_stroke_data = False
     elif model_name == 'cnn_rnn':
-        image_size = 28
         hyperparams = parse_hyperparams(hyperparams_path)
+        image_size = hyperparams['cnn_input_size']
         hyperparams['rnn_input_size'] = STROKE_INPUT_SIZE
         hyperparams['num_classes'] = NUM_CLASSES
-        hyperparams['cnn_input_size'] = image_size
         model = models.CNN_RNN(**hyperparams)
         requires_stroke_data = True
+        if pretrained:
+            if not run_id:
+                raise ValueError("run_id is None. Need to specify run_id to resume training")
+            model = load_model(model, model_name, run_id, local)
+            requires_stroke_data = False
     logging.info('Hyperparams:')
     logging.info(json.dumps(hyperparams, indent=2))
     logging.info(f"requires_stroke_data: {requires_stroke_data}")
+
+    model = model.to(device)
     return model, image_size, requires_stroke_data
 
 
@@ -69,7 +87,8 @@ def get_log_path(model_name, local, run_id):
 def get_model_path(model_name, local, run_id):
     root_dir = 'models' if local else '/scratch/dam740/AAI_project/models'
     model_path = f'{root_dir}/{model_name}_{run_id}'
-    os.makedirs(model_path)
+    if not os.path.isdir(model_path):
+        os.makedirs(model_path)
     return model_path
 
 
@@ -116,10 +135,10 @@ def train_loop(model, dataloaders, requires_stroke_data, optimizer, criterion, d
 
             for images, strokes, num_strokes, strokes_len, labels in loader:
                 images = images.to(device)
+                labels = labels.to(device)
                 strokes = strokes.to(device) if requires_stroke_data else None
                 num_strokes = num_strokes.to(device) if requires_stroke_data else None
                 strokes_len = strokes_len.to(device) if requires_stroke_data else None
-                labels = labels.to(device)
 
                 # restart grads
                 optimizer.zero_grad()
@@ -202,10 +221,9 @@ def plot_train_curves(curves_dict, model_path):
 
 
 def train(model_name, model_path, hyperparams_path, training_kind,
-          strokes_raw, local, test_run, one_class_only=False,
+          strokes_raw, local, test_run, run_id=None, one_class_only=False,
           num_epochs=400, max_stale=10):
-    lr = 0.001
-    batch_size = 25
+    batch_size = 32
     logging.info(f'Parameters:\n\t- num_epochs: {num_epochs}\n\t- batch_size: {batch_size}')
 
     # model
@@ -213,17 +231,25 @@ def train(model_name, model_path, hyperparams_path, training_kind,
     logging.info(f"Device: {device}")
 
     if training_kind == 'new':
+        lr = 0.001
         model, image_size, requires_stroke_data = initialize_model(model_name,
-                                                                   hyperparams_path)
-        model = model.to(device)
+                                                                   hyperparams_path,
+                                                                   device)
     elif training_kind == 'resume':
+        lr = 0.001
         # todo
         raise NotImplementedError()
         model_path = get_model_path(model_name, local, resume_training)
         mode_file = os.path.join(model_path, '')
         model = None
-    elif training_kind == 'resume_causal':
-        raise NotImplementedError()
+    elif training_kind == 'resume_cnn':
+        lr = 0.00001
+        model, image_size, requires_stroke_data = initialize_model(model_name,
+                                                                   hyperparams_path,
+                                                                   device,
+                                                                   pretrained=True,
+                                                                   run_id=run_id,
+                                                                   local=local)
 
     # data
     dataloaders = get_dataloaders(image_size, batch_size, requires_stroke_data,
