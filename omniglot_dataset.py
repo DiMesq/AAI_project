@@ -155,8 +155,7 @@ class OmniglotDataset(Dataset):
             self.stroke_data, self.strokes_len =\
                 pad_stroke_data(stroke_data, strokes_len, self.max_num_strokes,
                                 self.max_len_stroke)
-            logging.info(f'Max number of strokes is {self.max_num_strokes}')
-            logging.info(f'Max len of strokes is {self.max_len_stroke}')
+
         else:
             self.stroke_data = None
             self.num_strokes = None
@@ -165,19 +164,105 @@ class OmniglotDataset(Dataset):
         if one_class_only:
             labels = []
             examples = []
-            stroke_data = []
+            stroke_data, num_strokes, strokes_len = [], [], []
+            self.max_num_strokes = 0
+            self.max_len_stroke = 0
             for i in range(len(self.labels)):
                 if self.labels[i] == 0:
                     labels.append(self.labels[i])
-                    examples.append(self.examples_ids[i])
-                    if self.stroke_data:
-                        # todo
-                        raise NotImplementedError('Not implemented')
+                    examples.append(self.examples_id[i])
+                    if self.requires_stroke_data:
                         stroke_data.append(self.stroke_data[i])
+                        num_strokes.append(self.num_strokes[i])
+                        strokes_len.append(self.strokes_len[i])
+                        if self.num_strokes[i] > self.max_num_strokes:
+                            self.max_num_strokes = len(self.num_strokes[i])
+                        max_len = max(self.strokes_len[i])
+                        if  max_len > self.max_len_stroke:
+                            self.max_len_stroke = max_len
             self.labels = np.array(labels)
             self.examples_id = np.array(examples)
-            if self.stroke_data:
-                self.stroke_data = stroke_data
+            if self.requires_stroke_data:
+                self.stroke_data, self.num_strokes = stroke_data, num_strokes
+                self.strokes_len = strokes_len
+
+        logging.info(f'Len of dataset: {len(self.labels)}')
+        if self.requires_stroke_data:
+            logging.info(f'Max number of strokes is {self.max_num_strokes}')
+            logging.info(f'Max len of strokes is {self.max_len_stroke}')
+
+
+    def __len__(self):
+        return len(self.examples_id)
+
+    def __getitem__(self, idx):
+        image = Image.open(f'{self.images_path}/{self.examples_id[idx]}.png')
+        if self.transforms:
+            image = self.transforms(image)
+        strokes = self.stroke_data[idx] if self.stroke_data else None
+        num_strokes = self.num_strokes[idx] if self.stroke_data else None
+        strokes_len = self.strokes_len[idx] if self.stroke_data else None
+        return image, strokes, num_strokes, strokes_len, self.labels[idx]
+
+
+class OmniglotOneShotClassification(Dataset):
+
+    def __init__(self, images_path, strokes_path, labels_path,
+                 requires_stroke_data, transforms=None, one_class_only=False):
+        self.images_path = images_path
+        self.requires_stroke_data = requires_stroke_data
+        self.transforms = transforms
+
+        logging.info(f'Images path: {images_path}')
+        logging.info(f'requires_stroke_data: {requires_stroke_data}')
+        logging.info(f'Labels path: {labels_path}')
+
+        df_labels = pd.read_csv(labels_path)
+        self.labels = df_labels['label'].values
+        self.examples_id = df_labels['example_id'].values
+        if self.requires_stroke_data:
+            stroke_data = read_stroke_data(self.examples_id, strokes_path)
+            self.num_strokes, strokes_len, self.max_num_strokes,\
+                self.max_len_stroke = stroke_metadata(stroke_data)
+            self.stroke_data, self.strokes_len =\
+                pad_stroke_data(stroke_data, strokes_len, self.max_num_strokes,
+                                self.max_len_stroke)
+
+        else:
+            self.stroke_data = None
+            self.num_strokes = None
+            self.strokes_len = None
+
+        if one_class_only:
+            labels = []
+            examples = []
+            stroke_data, num_strokes, strokes_len = [], [], []
+            self.max_num_strokes = 0
+            self.max_len_stroke = 0
+            for i in range(len(self.labels)):
+                if self.labels[i] == 0:
+                    labels.append(self.labels[i])
+                    examples.append(self.examples_id[i])
+                    if self.requires_stroke_data:
+                        stroke_data.append(self.stroke_data[i])
+                        num_strokes.append(self.num_strokes[i])
+                        strokes_len.append(self.strokes_len[i])
+                        if self.num_strokes[i] > self.max_num_strokes:
+                            self.max_num_strokes = len(self.num_strokes[i])
+                        max_len = max(self.strokes_len[i])
+                        if  max_len > self.max_len_stroke:
+                            self.max_len_stroke = max_len
+            self.labels = np.array(labels)
+            self.examples_id = np.array(examples)
+            if self.requires_stroke_data:
+                self.stroke_data, self.num_strokes = stroke_data, num_strokes
+                self.strokes_len = strokes_len
+
+        logging.info(f'Len of dataset: {len(self.labels)}')
+        if self.requires_stroke_data:
+            logging.info(f'Max number of strokes is {self.max_num_strokes}')
+            logging.info(f'Max len of strokes is {self.max_len_stroke}')
+
 
     def __len__(self):
         return len(self.examples_id)
